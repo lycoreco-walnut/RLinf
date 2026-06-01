@@ -49,6 +49,42 @@ jobs:
           rm -rf .venv
           uv cache prune
 
+  embodied-d4rl-offline-iql-test:
+    runs-on: embodied
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create embodied environment (d4rl)
+        run: |
+          unset UV_DEFAULT_INDEX
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_LINK_MODE=symlink
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          bash requirements/install.sh embodied --env d4rl
+
+      - name: D4RL Offline IQL test (no FSDP wrap)
+        timeout-minutes: 15
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          source .venv/bin/activate
+          bash tests/e2e_tests/embodied/run_offline.sh d4rl_iql_mujoco
+
+      - name: D4RL Offline IQL test (FSDP wrap)
+        timeout-minutes: 15
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          source .venv/bin/activate
+          bash tests/e2e_tests/embodied/run_offline.sh d4rl_iql_mujoco egl actor.use_fsdp_wrap=true
+
+      - name: Clean up
+        run: |
+          rm -rf .venv
+          uv cache prune
+
   embodied-cnn-realworld-dummy-sac-test:
     runs-on: embodied
     steps:
@@ -101,6 +137,34 @@ jobs:
           export REPO_PATH=$(pwd)
           source .venv/bin/activate
           bash tests/e2e_tests/embodied/run.sh realworld_xsquare_turtle2_dummy_sac_cnn
+
+      - name: Clean up
+        run: |
+          rm -rf .venv
+          uv cache prune
+
+  embodied-mlp-realworld-dosw1-dummy-sac-test:
+    runs-on: embodied
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create embodied environment
+        run: |
+          unset UV_DEFAULT_INDEX
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_LINK_MODE=symlink
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          bash requirements/install.sh embodied --env dosw1
+
+      - name: DOSW1 Pick SAC dummy test
+        timeout-minutes: 20
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          source .venv/bin/activate
+          bash tests/e2e_tests/embodied/run.sh dosw1_dummy_sac_mlp_pick
 
       - name: Clean up
         run: |
@@ -228,6 +292,63 @@ jobs:
           rm -rf .venv
           uv cache prune
 
+  embodied-openvlaoft-libero-rocm-test:
+    runs-on: rocm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create ROCm embodied environment
+        run: |
+          unset UV_DEFAULT_INDEX
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_LINK_MODE=symlink
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          export LIBERO_PATH=/workspace/dataset/LIBERO
+          bash requirements/install.sh --platform amd embodied --model openvla-oft --env libero
+
+      - name: Libero-Goal GRPO test
+        timeout-minutes: 20
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          source .venv/bin/activate
+          bash tests/e2e_tests/embodied/run.sh libero_goal_grpo_openvlaoft osmesa
+
+      - name: Clean up
+        run: |
+          rm -rf .venv
+          uv cache prune
+
+  embodied-openvlaoft-libero-ascend-test:
+    runs-on: ascend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create Ascend embodied environment
+        run: |
+          unset UV_DEFAULT_INDEX
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          export LIBERO_PATH=/workspace/dataset/LIBERO
+          bash requirements/install.sh --platform ascend embodied --model openvla-oft --env libero
+
+      - name: Libero-Goal GRPO test
+        timeout-minutes: 20
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          source .venv/bin/activate
+          bash tests/e2e_tests/embodied/run.sh libero_goal_grpo_openvlaoft osmesa
+
+      - name: Clean up
+        run: |
+          rm -rf .venv
+          uv cache prune
+
   embodied-openvlaoft-behavior-test:
     runs-on: embodied
     steps:
@@ -260,6 +381,43 @@ jobs:
           rm -rf .venv
           uv cache prune
           rm -rf /tmp/tmp*
+
+  embodied-reward-model-maniskill-test:
+    runs-on: embodied
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create embodied environment
+        run: |
+          unset UV_DEFAULT_INDEX
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_LINK_MODE=symlink
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          export LIBERO_PATH=/workspace/dataset/LIBERO
+          bash requirements/install.sh embodied --env maniskill_libero --model qwen3_vl
+
+      - name: ManiSkill VLM Reward PPO test
+        timeout-minutes: 20
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          source .venv/bin/activate
+          bash tests/e2e_tests/embodied/run.sh maniskill_ppo_mlp_qwentrend_reward
+
+      - name: ManiSkill ResNet Reward PPO test
+        timeout-minutes: 20
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          source .venv/bin/activate
+          bash tests/e2e_tests/embodied/run.sh maniskill_ppo_mlp_resnet_reward
+
+      - name: Clean up
+        run: |
+          rm -rf .venv
+          uv cache prune
 
   embodied-openvlaoft-robotwin-test:
     runs-on: embodied
@@ -450,13 +608,13 @@ jobs:
           source .venv/bin/activate
           bash tests/e2e_tests/embodied/run.sh libero_spatial_ppo_openpi
 
-      - name: Libero-Goal NFT test
+      - name: Libero-Object NFT test
         timeout-minutes: 20
         run: |
           unset PYTHONPATH
           export REPO_PATH=$(pwd)
           source .venv/bin/activate
-          bash tests/e2e_tests/embodied/run.sh libero_goal_nft_openpi
+          bash tests/e2e_tests/embodied/run.sh libero_object_nft_openpi
 
       - name: Libero-Spatial DAgger test
         timeout-minutes: 20
@@ -682,6 +840,36 @@ jobs:
           rm -rf .venv
           uv cache prune
 
+  embodied-openpi-roboverse-test:
+    runs-on: embodied
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create embodied environment
+        run: |
+          unset UV_DEFAULT_INDEX
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_LINK_MODE=symlink
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          bash requirements/install.sh embodied --model openpi --env roboverse
+
+      - name: RoboVerse PPO test
+        timeout-minutes: 20
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          cp -r /workspace/dataset/roboverse_data .
+          source .venv/bin/activate
+          bash tests/e2e_tests/embodied/run.sh roboverse_ppo_openpi_pi05
+          mv roboverse_data .venv/roboverse/
+
+      - name: Clean up
+        run: |
+          rm -rf .venv
+          uv cache prune
+
   embodied-dexbotic-maniskill-libero-test:
     runs-on: embodied
     steps:
@@ -706,6 +894,36 @@ jobs:
           export REPO_PATH=$(pwd)
           source .venv/bin/activate
           bash tests/e2e_tests/embodied/run.sh libero_spatial_ppo_dexbotic_pi0
+
+      - name: Clean up
+        run: |
+          rm -rf .venv
+          uv cache prune
+
+  embodied-starvla-maniskill-libero-test:
+    runs-on: embodied
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create embodied environment
+        run: |
+          unset UV_DEFAULT_INDEX
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_LINK_MODE=symlink
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          export LIBERO_PATH=/workspace/dataset/LIBERO
+          export STARVLA_PATH=/workspace/dataset/starVLA
+          bash requirements/install.sh embodied --model starvla --env maniskill_libero
+
+      - name: Libero-10 GRPO test
+        timeout-minutes: 20
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          source .venv/bin/activate
+          bash tests/e2e_tests/embodied/run.sh libero_10_grpo_starvla
 
       - name: Clean up
         run: |
@@ -806,6 +1024,52 @@ jobs:
           rm -rf .venv
           uv cache prune
 
+  embodied-lingbotva-robotwin-test:
+    runs-on: embodied
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create embodied environment
+        run: |
+          unset UV_DEFAULT_INDEX
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_LINK_MODE=symlink
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          export ROBOTWIN_PATH=/workspace/dataset/RoboTwin
+          bash requirements/install.sh embodied --venv .venv-lingbotva --model lingbotva --env robotwin
+          source .venv-lingbotva/bin/activate
+          bash requirements/embodied/download_assets.sh --dir /workspace/dataset --assets lingbotva
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          config_path = Path("/workspace/dataset/.cache/lingbotva/lingbot-va-posttrain-robotwin/transformer/config.json")
+          config = json.loads(config_path.read_text())
+          if config.get("attn_mode") not in {"torch", "flashattn"}:
+              config["attn_mode"] = "torch"
+              config_path.write_text(json.dumps(config, indent=2) + "\n")
+          PY
+
+      - name: RoboTwin-LingBotVA eval test
+        timeout-minutes: 30
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          source .venv-lingbotva/bin/activate
+          export ROBOT_PLATFORM=ALOHA
+          export ROBOTWIN_PATH="/workspace/dataset/RoboTwin"
+          export PYTHONPATH=${ROBOTWIN_PATH}:$PYTHONPATH
+          export LINGBOT_VA_REPO_PATH="$(pwd)/.venv-lingbotva/lingbot-va"
+          export LINGBOT_VA_MODEL_PATH="/workspace/dataset/.cache/lingbotva/lingbot-va-posttrain-robotwin"
+          bash tests/e2e_tests/embodied/run_eval.sh robotwin_eval_lingbotva egl
+
+      - name: Clean up
+        run: |
+          rm -rf .venv-lingbotva
+          uv cache prune
+
   embodied-openvlaoft-liberopro-test:
     runs-on: embodied
     steps:
@@ -862,6 +1126,38 @@ jobs:
           source .venv/bin/activate
           export LIBERO_TYPE=plus
           bash tests/e2e_tests/embodied/run.sh liberoplus_10_grpo_openvlaoft
+
+      - name: Clean up
+        run: |
+          rm -rf .venv
+          uv cache prune
+
+  embodied-embodichain-test:
+    runs-on: embodied
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create embodied environment
+        run: |
+          unset UV_DEFAULT_INDEX
+          export UV_PATH=/workspace/dataset/.uv
+          export UV_LINK_MODE=symlink
+          export UV_CACHE_DIR=/workspace/dataset/.uv_cache
+          export UV_PYTHON_INSTALL_DIR=/workspace/dataset/.uv_python
+          bash requirements/install.sh embodied --env embodichain
+
+      - name: EmbodiChain CartPole PPO test
+        timeout-minutes: 20
+        run: |
+          unset PYTHONPATH
+          export REPO_PATH=$(pwd)
+          source .venv/bin/activate
+          export LD_LIBRARY_PATH="$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))'):${LD_LIBRARY_PATH:-}"
+          export EMBODICHAIN_DATA_ROOT=/workspace/dataset/embodichain_data
+          python -m embodichain.data download --name CartPole
+          python -m embodichain.data download --name SimResources
+          bash tests/e2e_tests/embodied/run.sh embodichain_ppo_cart_pole
 
       - name: Clean up
         run: |

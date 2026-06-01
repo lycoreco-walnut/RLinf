@@ -17,9 +17,11 @@ import os
 
 import torch
 import yaml
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
-SUPPORTED_ENV_WRAPPERS = ("default", "rgb_lowres", "rich_obs")
+from rlinf.utils.logging import get_logger
+
+SUPPORTED_ENV_WRAPPERS = ("rgb", "default", "rgb_lowres", "rich_obs")
 
 R1PRO_PROPRIO_KEYS = [
     "joint_qpos",
@@ -60,6 +62,31 @@ R1PRO_PROPRIO_KEYS = [
 ]
 
 
+def sync_robot_after_pose_override(robot) -> None:
+    """Synchronize robot state after a direct pose override.
+
+    Offline BEHAVIOR instance loading often teleports the robot base via
+    ``set_position_orientation`` without restoring the robot articulation /
+    controller state. Reset controller goals to the robot's current joint state so
+    the next control step starts from a consistent no-op target instead of stale
+    goals carried over from a previous episode / instance.
+
+    Args:
+        robot: OmniGibson robot instance whose pose was overridden.
+    """
+    robot.keep_still()
+
+    if getattr(robot, "n_joints", 0) > 0:
+        current_joint_positions = robot.get_joint_positions()
+        robot.set_joint_positions(positions=current_joint_positions, drive=False)
+        robot.set_joint_velocities(
+            velocities=torch.zeros_like(current_joint_positions),
+            drive=False,
+        )
+
+    robot.keep_still()
+
+
 def set_camera_resolution(camera_cfg: dict | None) -> None:
     if camera_cfg is None:
         return
@@ -74,7 +101,24 @@ def set_camera_resolution(camera_cfg: dict | None) -> None:
         eval_utils.WRIST_RESOLUTION = tuple(wrist_resolution)
 
 
+def apply_runtime_renderer_settings() -> None:
+    """
+    RLinf-specific renderer overrides after OmniGibson has launched.
+    """
+
+    import omnigibson.lazy as lazy
+
+    lazy.carb.settings.get_settings().set_float(
+        "/rtx-transient/resourcemanager/texturestreaming/memoryBudget",
+        0.1,
+    )
+
+
 def get_env_wrapper(wrapper_name: str):
+    if wrapper_name == "rgb":
+        from .rgb_wrapper import RGBWrapper
+
+        return RGBWrapper
     if wrapper_name == "default":
         from omnigibson.learning.wrappers.default_wrapper import DefaultWrapper
 
@@ -195,6 +239,39 @@ def setup_omni_cfg(cfg: DictConfig) -> DictConfig:
         omni_cfg, "robots[0].proprio_obs", override_proprio_obs, merge=True
     )
 
+    # automatically set task-relevant rooms to ``scene.load_room_types`` via gello.
+    # (mirrored from OmniGibson ``learning/eval.py``)
+    partial_scene_load = OmegaConf.select(omni_cfg, "scene.partial_scene_load")
+    if partial_scene_load is not None:
+        with open_dict(omni_cfg.scene):
+            omni_cfg.scene.pop("partial_scene_load", None)
+        if partial_scene_load:
+            from gello.robots.sim_robot.og_teleop_utils import (
+                augment_rooms,
+                get_task_relevant_room_types,
+            )
+
+            activity_name = OmegaConf.select(omni_cfg, "task.activity_name")
+            scene_model = OmegaConf.select(omni_cfg, "scene.scene_model")
+            if not activity_name or not scene_model:
+                raise ValueError(
+                    "partial_scene_load requires task.activity_name and scene.scene_model "
+                    f"in omni_config; got activity_name={activity_name!r}, "
+                    f"scene_model={scene_model!r}."
+                )
+            relevant_rooms = get_task_relevant_room_types(activity_name=activity_name)
+            relevant_rooms = augment_rooms(relevant_rooms, scene_model, activity_name)
+            relevant_rooms.sort()
+            OmegaConf.update(
+                omni_cfg,
+                "scene.load_room_types",
+                relevant_rooms,
+                merge=False,
+            )
+            get_logger().info(
+                f"Auto-detected relevant rooms for task {activity_name}: {relevant_rooms}"
+            )
+
     # setup omnigibson macros, according to configuration yaml
     macro_cfg = OmegaConf.select(omni_cfg, "macro")
     gm.HEADLESS = macro_cfg.headless
@@ -210,7 +287,9 @@ def setup_omni_cfg(cfg: DictConfig) -> DictConfig:
     set_camera_resolution(camera_cfg)
 
     # override behavior's termination config `max_steps` field
-    max_episode_steps = OmegaConf.select(cfg, "max_episode_steps")
+    max_episode_steps = (
+        OmegaConf.select(cfg, "max_episode_steps") - 1
+    )  # BEHAVIOR env will off-by-one
     assert max_episode_steps is not None, "must set max_episode_steps in config."
     OmegaConf.update(
         omni_cfg,
@@ -219,17 +298,3 @@ def setup_omni_cfg(cfg: DictConfig) -> DictConfig:
     )
 
     return omni_cfg
-
-
-def resample_task(vec_env, omni_task_cfg: DictConfig, num_envs: int):
-    online_object_sampling = OmegaConf.select(omni_task_cfg, "online_object_sampling")
-    use_presampled_robot_pose = OmegaConf.select(
-        omni_task_cfg, "use_presampled_robot_pose"
-    )
-
-    assert online_object_sampling and not use_presampled_robot_pose, (
-        f"online_object_sampling should be True and use_presampled_robot_pose should be False, but got {online_object_sampling} and  {use_presampled_robot_pose}"
-    )
-
-    for i in range(num_envs):
-        vec_env.envs[i].update_task(task_config=omni_task_cfg)

@@ -3,6 +3,7 @@ defaults:
   - env/realworld_peg_insertion@env.eval
   - model/cnn_policy@actor.model
   - training_backend/fsdp@actor.fsdp_config
+  - weight_syncer/patch_syncer@weight_syncer
   - override hydra/job_logging: stdout
 
 hydra:
@@ -130,13 +131,14 @@ env:
   
   eval:
     total_num_envs: 1
+    override_cfg:
+      is_dummy: False
 
 rollout:
   group_name: "RolloutGroup"
   backend: "huggingface"
   enable_offload: False
   pipeline_stage_num: 1
-  sync_weight_nccl_max_ctas: 32 # Max CTAs (Compute Thread Array, the compute resource of GPUs) for sync weight communication. Higher values consume more GPU resources, and thus sync weight is faster but could affect rollout speed in async mode. Positive integer 1 to 32. Default 32.
 
   collect_transitions: True
   collect_prev_infos: False
@@ -183,15 +185,16 @@ actor:
       buffer_dtype: ${actor.model.precision}
 
 reward:
-  use_reward_model: True
+  use_reward_model: False
   group_name: "RewardGroup"
   
+  standalone_realworld: False
   # Reward mode:
   # - "per_step": Compute reward for every frame (default, prone to reward hacking)
   # - "terminal": Only compute reward at episode end (last frame), prevents reward hacking
-  reward_mode: "terminal"
+  reward_mode: "per_step"
 
-  reward_threshold: 0.5 # Probability threshold for success/fail classification
+  reward_threshold: 0.8 # Probability threshold for success/fail classification
   
   # How to combine learned rewards with environment rewards:
   # Weighted sum (reward = env_reward_weight * env_reward + reward_weight * reward_model_reward)
@@ -211,3 +214,6 @@ reward:
 
 critic:
   use_critic_model: False
+
+weight_syncer:
+  nccl_max_ctas: 32 # Max CTAs (Compute Thread Array, the compute resource of GPUs) for sync weight communication. Higher values consume more GPU resources, and thus sync weight is faster but could affect rollout speed in async mode. Positive integer 1 to 32. Default 32.

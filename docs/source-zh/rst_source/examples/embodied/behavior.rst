@@ -262,6 +262,7 @@ OpenVLA-OFT 提供了一个适用于 Behavior 环境中所有任务类型的统�
 - OpenPI (Pi0) + PPO:
   ``examples/embodiment/config/behavior_ppo_openpi.yaml``
 - OpenPI (Pi0.5) + PPO:
+  ``examples/embodiment/config/behavior_ppo_openpi_pi05_eval.yaml``
   ``examples/embodiment/config/behavior_ppo_openpi_pi05.yaml``
 
 .. warning::
@@ -274,8 +275,8 @@ OpenVLA-OFT 提供了一个适用于 Behavior 环境中所有任务类型的统�
    上述 Behavior 配置默认都通过 ``defaults`` 引入
    ``examples/embodiment/config/env/behavior_r1pro.yaml``（同时用于 ``env.train`` 与
    ``env.eval``）。该文件定义了 R1 Pro 的基础环境配置，包括 ``task_idx``、
-   ``max_episode_steps``、``max_steps_per_rollout_epoch``、相机分辨率与
-   ``omni_config`` 等参数。实际实验中可在具体配置文件的 ``env.train`` / ``env.eval``
+   ``max_episode_steps``、``max_steps_per_rollout_epoch``、``num_env_subprocess``、
+   相机分辨率与 ``omni_config`` 等参数。实际实验中可在具体配置文件的 ``env.train`` / ``env.eval``
    中覆盖这些默认值。
 
 **behavior_r1pro.yaml 关键配置说明**
@@ -283,32 +284,84 @@ OpenVLA-OFT 提供了一个适用于 Behavior 环境中所有任务类型的统�
 - ``base_config_name: r1pro_behavior``：
   RLinf 会先加载 OmniGibson 的 ``r1pro_behavior.yaml`` 基础配置，再用
   ``omni_config`` 覆盖（见 ``rlinf/envs/behavior/utils.py`` 中 ``setup_omni_cfg``）。
-- ``omni_config.task.type: RLinfBehaviorTask`` 与
-  ``omni_config.scene.type: RLinfInteractiveTraversableScene``：
-  RLinf 为 ``omnigibson==3.7.1`` 提供了一层轻量 BEHAVIOR 兼容 patch。
-  使用 RLinf 的 BEHAVIOR 配置时，应在
-  ``examples/embodiment/config/env/behavior_r1pro.yaml`` 中保留这两个类型。
-  ``install_patch()`` 仍会由 ``rlinf/envs/behavior/behavior_env.py`` 在创建
-  ``VectorEnvironment`` 之前自动调用，但它现在只负责注册 RLinf 自定义类并应用
-  monkey patch，不会再改写 ``task.type`` 或 ``scene.type``，因此这两个 YAML
-  配置需要显式填写。
-- RLinf BEHAVIOR patch 内容：
-  该 patch 修复了 OmniGibson 3.7.1 下若干多环境问题，包括
-  ``BehaviorTask`` callback 的跨 scene 污染、presampled robot pose 被当作
-  world frame 而非 scene frame 应用、同类机器人跨 scene 共享 control view，
-  以及 RLinf 的 ``setup_omni_cfg`` 之前未覆盖 ``scene`` 子配置的问题。
-- 版本说明：
-  当前 patch 仅针对 ``omnigibson==3.7.1`` 测试并支持。若检测到其他
-  OmniGibson 版本，RLinf 会在环境初始化阶段直接报错。
+- ``omni_config.task.type: BehaviorTask`` 与
+  ``omni_config.scene.type: InteractiveTraversableScene``：
+  RLinf 现在直接使用 OmniGibson 上游的 BEHAVIOR task 与 scene 类。使用
+  RLinf 的 BEHAVIOR 配置时，应在
+  ``examples/embodiment/config/env/behavior_r1pro.yaml`` 中显式保留这两个类型，
+  以便 ``setup_omni_cfg`` 应用覆盖后仍然选择预期的 OmniGibson 类。
 - ``task_idx``：
   当前任务编号（0-49），RLinf 会将其映射到具体任务名并写入
   ``task.activity_name``（见 ``rlinf/envs/behavior/behavior_env.py``）。
-- ``omni_config.task.resample_task_when_reset: True``：
-  每次 ``env.reset()`` 前会调用 ``update_task`` 触发重采样，使同一
-  ``activity_name`` 下的场景/物体布局在 episode 间变化。
-  该选项依赖 ``online_object_sampling: True`` 且
-  ``use_presampled_robot_pose: False``（否则会触发断言）。
-  若需要固定场景做严格对比实验，可将其设为 ``False``。
+- ``omni_config.task.instance_resample_mode``：
+  控制 reset 时如何切换实例，支持 ``disabled``、``offline`` 和 ``online``。
+  当取值为 ``offline`` 时，RLinf 会在启动时扫描
+  ``omni_config.task.activity_instance_dir``，直接解析目录中的文件名，
+  并在每次 ``env.reset()`` 前随机选取一个 cached offline instance。
+  ``*_template.json`` 会按完整缓存模板处理，走更重的 scene reload 路径；
+  ``*_template-tro_state.json`` 会按 task-relevant-only 缓存状态处理，
+  走更轻的原地加载路径。
+  当取值为 ``online`` 时，RLinf 会在 reset 前走在线 task 重采样路径，
+  这要求 ``online_object_sampling: True`` 且
+  ``use_presampled_robot_pose: False``。
+  当取值为 ``disabled`` 时，如果设置了 ``activity_instance_dir``，
+  RLinf 会在每次 reset 前从该目录加载配置中的 ``activity_instance_id``。
+- ``omni_config.task.activity_instance_dir``：
+  可选目录，里面存放离线 task instance JSON 文件。RLinf 当前支持官方
+  ``*_template.json``，也支持 ``*_template-tro_state.json``。
+  它既可用于 ``instance_resample_mode: offline``，也可用于 ``disabled``
+  模式下按固定 ``activity_instance_id`` 加载离线 instance。
+- ``omni_config.task.instance_file_format``：
+  可选的缓存 instance 文件格式选择器，支持 ``template``、``tro_state``。
+  设成 ``template`` 会强制走完整模板 reload；设成 ``tro_state`` 会强制走
+  task-relevant-only 的轻量加载路径。RLinf 也兼容官方未包含
+  ``robot_poses`` 的 ``tro_state`` 文件；这种情况下 RLinf 会清掉旧的
+  ``robot_poses`` metadata，随后 reset 会回到任务默认的机器人初始位姿，
+  而不是继续使用 presampled pose override。从 ``template.json`` 转换时，通常不应把当前
+  simulator 中机器人的位置直接写入 ``robot_poses``。
+- ``omni_config.scene.partial_scene_load``：
+  设为 ``true`` 时，会根据 ``task.activity_name`` 与 ``scene.scene_model``自动写入
+  ``scene.load_room_types``，只加载任务相关房间，通常可缩短启动时间并降低内存占用；
+  需要提供 ``activity_name`` 与 ``scene_model``。设为 ``false`` 或不写该字段时，
+  RLinf 不会自动改写 ``load_room_types``，可按需手动指定房间列表。
+- 使用 RLinf 自带脚本生成 cached instance：
+  RLinf 提供了 ``rlinf/envs/behavior/instance_generator.py``，可以
+  直接读取 ``examples/embodiment/config/env/behavior_r1pro.yaml`` 生成
+  ``*_template.json`` 和 ``*_template-tro_state.json``。
+  该脚本会读取 yaml 中的 ``omni_config.scene.scene_model``、
+  ``omni_config.task.activity_name``、
+  ``omni_config.task.activity_definition_id``、机器人配置以及房间加载配置，
+  并在生成阶段临时切到 online object sampling。
+  如果 ``omni_config.task.activity_instance_dir`` 已设置，就写入该目录；
+  否则默认写入 ``OMNIGIBSON_DATA_PATH`` 的
+  ``2025-challenge-task-instances`` 目录。你也可以用 ``--output-dir``
+  显式覆盖输出目录。
+
+  .. code-block:: bash
+
+     cd /path/to/RLinf
+
+     python rlinf/envs/behavior/instance_generator.py \
+       --config examples/embodiment/config/env/behavior_r1pro.yaml \
+       --output-format template \
+       --start-idx 1 \
+       --end-idx 50
+
+     python rlinf/envs/behavior/instance_generator.py \
+       --config examples/embodiment/config/env/behavior_r1pro.yaml \
+       --output-format tro_state \
+       --start-idx 1 \
+       --end-idx 50
+
+  生成出的文件名格式为
+  ``<scene_model>_task_<activity_name>_<activity_definition_id>_<activity_instance_id>_template(.json|-tro_state.json)``。
+  因此 ``--start-idx`` / ``--end-idx`` 控制的就是生成出的
+  ``activity_instance_id`` 范围。若生成 ``tro_state``，当任务 metadata 中存在
+  ``robot_poses`` 时，脚本会一并写入；若不存在，则不会写这个 key，后续 RLinf
+  reset 时就会回到任务默认的机器人初始位姿。BEHAVIOR-1K 上游的
+  ``OmniGibson/omnigibson/sampling/multiply_b1k_tasks.py`` 依然可以使用，但更
+  推荐优先使用 RLinf 这份脚本，因为它能直接读取 RLinf yaml，并且会保留其中
+  的 ``activity_definition_id``。
 - ``camera.head_resolution`` / ``camera.wrist_resolution``：
   分别对应头部/腕部相机分辨率。RLinf 会覆盖
   ``omnigibson.learning.utils.eval_utils`` 中默认分辨率（默认是 720x720 与 480x480），
@@ -329,6 +382,20 @@ OpenVLA-OFT 提供了一个适用于 Behavior 环境中所有任务类型的统�
   启用物体状态变化规则（如切割、烹饪等相关机制）。
 - ``omni_config.macro.use_numpy_controller_backend: True``：
   使用 numpy 控制器后端，单进程/中小规模并行下通常更快。
+- ``skip_intermediate_obs_in_chunk``：
+  RLinf 在 BEHAVIOR 的 chunked action 执行中，会先连续执行多个底层机器人
+  动作，再把控制权返回给策略。当该选项设为 ``True`` 时，RLinf 会跳过 chunk
+  内部的中间 observation，只保留策略实际会消费到的 observation。这样通常会显著
+  提升环境速度，因为需要包装、传输和记录的相机 observation 更少。一个直接影响是，
+  保存的视频将不再包含每个底层机器人动作对应的所有帧，而只保留机器人在 chunk
+  边界真正“看到”的那些帧。
+- ``num_env_subprocess``：
+  在单个 env worker 进程内，将并行环境个数 ``num_envs`` 划分为多个 **子进程**
+  分别承载 Isaac/OmniGibson 仿真（见 ``behavior_env.py`` 中的 ``BehaviorProcessProxy``）。
+  默认值为 ``1``，行为与原先单路子进程一致。设为大于 ``1`` 时，每个子进程负责
+  ``num_envs / num_env_subprocess`` 个并行环境；子进程间通过管道通信，并行收包以降低阻塞。
+  **约束**：``num_envs`` 必须能被 ``num_env_subprocess`` 整除，否则会断言失败。
+  适当增大该值可在单机多核/GPU 场景下缓解环境步进瓶颈，但会成倍增加仿真进程开销与显存占用，需结合实际资源调参。
 
 --------------
 
@@ -353,7 +420,7 @@ OpenVLA-OFT 提供了一个适用于 Behavior 环境中所有任务类型的统�
 
 --------------
 
-**4. 使用 behavior_ppo_openpi_pi05.yaml 进行评估**
+**4. 使用 behavior_ppo_openpi_pi05_eval.yaml 进行评估**
 
 原则上，任意在 Behavior 上有非零成功率、且已转换为 PyTorch 格式的 ``pi05`` ckpt，
 都可以用于该配置进行评估。这里以 OpenPI-Comet 为示例，模型来源可参考：
@@ -366,7 +433,7 @@ OpenVLA-OFT 提供了一个适用于 Behavior 环境中所有任务类型的统�
 
 感谢 OpenPI-Comet 作者开源模型与工具，方便社区在 RLinf 上进行复现与评测。
 
-完成权重转换后，请在 ``behavior_ppo_openpi_pi05.yaml`` 中完成以下调整：
+完成权重转换后，请在 ``behavior_ppo_openpi_pi05_eval.yaml`` 中完成以下调整：
 
 1. 将 ``actor.model.model_path`` 与 ``rollout.model.model_path`` 指向转换后的模型目录。
 2. 将 ``env.train`` 与 ``env.eval`` 的 ``max_episode_steps``、
@@ -388,7 +455,7 @@ OpenVLA-OFT 提供了一个适用于 Behavior 环境中所有任务类型的统�
 
    export ISAAC_PATH=/path/to/isaac-sim
    export OMNIGIBSON_DATA_PATH=/path/to/BEHAVIOR-1K-datasets
-   bash examples/embodiment/eval_embodiment.sh behavior_ppo_openpi_pi05
+   bash examples/embodiment/eval_embodiment.sh behavior_ppo_openpi_pi05_eval
 
 
 可视化和结果
