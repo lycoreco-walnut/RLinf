@@ -29,6 +29,10 @@ class FSDPVlaSftWorker(FSDPSftWorker):
     def __init__(self, cfg: DictConfig):
         super().__init__(cfg)
 
+    @staticmethod
+    def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
+        return getattr(model, "module", model)
+
     def build_dataloader(self, data_paths: Any, eval_dataset: bool = False):
         if SupportedModel(self.cfg.actor.model.model_type) in [SupportedModel.OPENPI]:
             repo_id = resolve_lerobot_repo_id(data_paths)
@@ -54,13 +58,26 @@ class FSDPVlaSftWorker(FSDPSftWorker):
             )
             return data_loader, data_loader.data_config()
         elif SupportedModel(self.cfg.actor.model.model_type) in [
-            SupportedModel.LINGBOTVLA
+            SupportedModel.LINGBOTVLA,
+            SupportedModel.LINGBOTVA,
         ]:
-            from rlinf.models.embodiment.lingbotvla.sft_builder import (
-                build_lingbot_sft_dataloader,
+            if (
+                SupportedModel(self.cfg.actor.model.model_type)
+                == SupportedModel.LINGBOTVLA
+            ):
+                from rlinf.models.embodiment.lingbotvla.sft_builder import (
+                    build_lingbot_sft_dataloader,
+                )
+
+                return build_lingbot_sft_dataloader(
+                    self.cfg, self._world_size, self._rank, data_paths
+                )
+
+            from rlinf.data.datasets.lingbotva import (
+                build_lingbotva_sft_dataloader,
             )
 
-            return build_lingbot_sft_dataloader(
+            return build_lingbotva_sft_dataloader(
                 self.cfg, self._world_size, self._rank, data_paths
             )
         elif SupportedModel(self.cfg.actor.model.model_type) in [
@@ -103,6 +120,12 @@ class FSDPVlaSftWorker(FSDPSftWorker):
 
     def save_checkpoint(self, save_path: str, step: int = 0) -> None:
         super().save_checkpoint(save_path, step)
+
+        post_save_hook = getattr(
+            self._unwrap_model(self.model), "post_sft_checkpoint_save", None
+        )
+        if callable(post_save_hook):
+            post_save_hook(save_path=save_path, rank=self._rank)
 
         if isinstance(self.data_loader, StatefulDataLoader):
             state = self.data_loader.state_dict()

@@ -10,7 +10,7 @@ The current integration focuses on RoboTwin evaluation and keeps the official Li
 Overview
 --------
 
-LingBot-VA is currently supported in RLinf for **RoboTwin evaluation**.
+LingBot-VA is currently supported in RLinf for **RoboTwin evaluation**, with an SFT config entry included.
 
 The current integration has the following characteristics:
 
@@ -19,7 +19,7 @@ The current integration has the following characteristics:
 * **Action Space**: 16D end-effector actions.
 * **Planner backend**: ``curobo``.
 * **Execution type**: ``action_type: ee``.
-* **Current support**: evaluation through RLinf rollout workers.
+* **Current support**: evaluation through RLinf rollout workers, plus an SFT config entry for training pipeline validation.
 
 The validated configs keep:
 

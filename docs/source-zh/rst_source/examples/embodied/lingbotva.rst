@@ -10,7 +10,7 @@ LingBot-VA 在 RoboTwin 上的评测
 概览
 ----
 
-LingBot-VA 当前在 RLinf 中支持 **RoboTwin 评测**。
+LingBot-VA 当前在 RLinf 中支持 **RoboTwin 评测**，并包含 SFT 配置入口。
 
 当前接入具有以下特征：
 
@@ -19,7 +19,7 @@ LingBot-VA 当前在 RLinf 中支持 **RoboTwin 评测**。
 * **动作空间**：16 维 end-effector 动作。
 * **规划后端**：``curobo``。
 * **执行类型**：``action_type: ee``。
-* **当前支持**：通过 RLinf rollout worker 执行 evaluation。
+* **当前支持**：通过 RLinf rollout worker 执行 evaluation，并提供用于训练链路验证的 SFT 配置入口。
 
 已验证配置固定为：
 

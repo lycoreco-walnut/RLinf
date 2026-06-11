@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""LingBot-VA adapter for RLinf embodied rollout."""
+"""LingBot-VA adapter for RLinf embodied rollout and SFT."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn.functional as F
+from safetensors.torch import load_file
 from scipy.spatial.transform import Rotation as R
 
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
@@ -38,6 +39,8 @@ from rlinf.models.embodiment.lingbotva.observation_adapter import (
 )
 from rlinf.models.embodiment.lingbotva.utils import (
     _extend_import_path,
+    _extract_transformer_state_dict,
+    export_official_transformer_checkpoint,
 )
 from rlinf.utils.logging import get_logger
 
@@ -86,6 +89,15 @@ def _load_transformer_config(transformer_path: Path) -> dict[str, Any]:
     return {key: value for key, value in config_data.items() if not key.startswith("_")}
 
 
+class _WanVATrainingContext:
+    def __init__(self, config: Any, torch_dtype: torch.dtype) -> None:
+        self.config = config
+        self.device = torch.device("cpu")
+        self.dtype = torch_dtype
+        self.patch_size = tuple(config.patch_size)
+        self.gradient_accumulation_steps = 1
+
+
 class LingbotVAActionModel(WanTransformer3DModel, BasePolicy):
     def __init__(self, cfg: Any, torch_dtype: torch.dtype = torch.bfloat16):
         self.rlinf_config = cfg
@@ -94,22 +106,39 @@ class LingbotVAActionModel(WanTransformer3DModel, BasePolicy):
         self.model_path = Path(cfg.model_path)
         _extend_import_path(self.repo_path)
 
-        transformer_path = self.model_path / "transformer"
-        WanTransformer3DModel.__init__(
-            self,
-            **_load_transformer_config(transformer_path),
-        )
-        self._load_pretrained_transformer(transformer_path)
-        self.to(dtype=torch_dtype)
-        self.eval()
-        self.requires_grad_(False)
+        self._sft_enabled = bool(getattr(cfg.lingbotva, "enable_sft", False))
+        if self._sft_enabled:
+            transformer_path = self.model_path / "transformer"
+            WanTransformer3DModel.__init__(
+                self,
+                **_load_transformer_config(transformer_path),
+            )
+            self._load_pretrained_transformer(transformer_path)
+            self.to(dtype=torch_dtype)
+            self.train()
+            self.requires_grad_(True)
+        else:
+            transformer_path = self.model_path / "transformer"
+            WanTransformer3DModel.__init__(
+                self,
+                **_load_transformer_config(transformer_path),
+            )
+            self._load_pretrained_transformer(transformer_path)
+            self.to(dtype=torch_dtype)
+            self.eval()
+            self.requires_grad_(False)
 
         self.num_action_chunks = int(getattr(cfg, "num_action_chunks", 32))
         self.action_dim = int(getattr(cfg, "action_dim", 16))
         self.action_per_frame = int(getattr(cfg.lingbotva, "action_per_frame", 16))
         self._episode_states: dict[int, LingbotVAEpisodeState] = {}
         self._runtime_initialized = False
-        atexit.register(self.close)
+        self._ac_applied = False
+
+        if self._sft_enabled:
+            self._init_sft_helpers()
+        else:
+            atexit.register(self.close)
 
     def _load_pretrained_transformer(self, transformer_path: Path) -> None:
         if not transformer_path.exists():
@@ -131,20 +160,115 @@ class LingbotVAActionModel(WanTransformer3DModel, BasePolicy):
                 f"(missing={len(missing_keys)}, unexpected={len(unexpected_keys)})."
             )
 
+    def _init_sft_helpers(self) -> None:
+        from wan_va.configs import VA_CONFIGS
+        from wan_va.train import Trainer as WanVATrainer
+        from wan_va.utils import FlowMatchScheduler
+
+        train_config_name = getattr(
+            self.rlinf_config.lingbotva, "train_config_name", "robotwin_train"
+        )
+        self.train_cfg = copy.deepcopy(VA_CONFIGS[train_config_name])
+        self.train_cfg.wan22_pretrained_model_name_or_path = str(self.model_path)
+        self.train_cfg.param_dtype = self.torch_dtype
+        self._sft_context = _WanVATrainingContext(
+            config=self.train_cfg,
+            torch_dtype=self.torch_dtype,
+        )
+        self._sft_context._add_noise = WanVATrainer._add_noise.__get__(
+            self._sft_context,
+            type(self._sft_context),
+        )
+        self._sft_context._prepare_input_dict = (
+            WanVATrainer._prepare_input_dict.__get__(
+                self._sft_context,
+                type(self._sft_context),
+            )
+        )
+        self._sft_context.compute_loss = WanVATrainer.compute_loss.__get__(
+            self._sft_context,
+            type(self._sft_context),
+        )
+        self._apply_official_activation_checkpointing()
+        self._sft_context.train_scheduler_latent = FlowMatchScheduler(
+            shift=self.train_cfg.snr_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
+        )
+        self._sft_context.train_scheduler_latent.set_timesteps(1000, training=True)
+        self._sft_context.train_scheduler_action = FlowMatchScheduler(
+            shift=self.train_cfg.action_snr_shift,
+            sigma_min=0.0,
+            extra_one_step=True,
+        )
+        self._sft_context.train_scheduler_action.set_timesteps(1000, training=True)
+
+    def _apply_official_activation_checkpointing(self) -> None:
+        if self._ac_applied:
+            return
+        from wan_va.distributed.fsdp import apply_ac
+
+        apply_ac(self)
+        self._ac_applied = True
+
+    def gradient_checkpointing_enable(self, **kwargs) -> None:
+        del kwargs
+        if self._sft_enabled:
+            self._apply_official_activation_checkpointing()
+
+    def gradient_checkpointing_disable(self) -> None:
+        return None
+
     def forward(self, forward_type=ForwardType.DEFAULT, *args, **kwargs):
         if not isinstance(forward_type, ForwardType):
             return WanTransformer3DModel.forward(self, forward_type, *args, **kwargs)
+        if forward_type == ForwardType.SFT:
+            return self.sft_forward(**kwargs)
         if forward_type == ForwardType.DEFAULT:
             return self.default_forward(**kwargs)
-        raise NotImplementedError(
-            "LingBot-VA currently supports RoboTwin evaluation in RLinf."
+        raise NotImplementedError
+
+    def sft_forward(self, data, **kwargs):
+        del kwargs
+        if not self._sft_enabled:
+            raise NotImplementedError(
+                "LingBot-VA SFT support is disabled for the current config."
+            )
+        first_tensor = next(value for value in data.values() if torch.is_tensor(value))
+        device = first_tensor.device
+        self._sft_context.device = torch.device(device)
+        batch = {
+            "latents": data["latents"].to(device=device, dtype=self.torch_dtype),
+            "text_emb": data["text_emb"].to(device=device, dtype=self.torch_dtype),
+            "actions": data["actions"].to(device=device, dtype=self.torch_dtype),
+            "actions_mask": data["actions_mask"].to(device=device),
+        }
+        input_dict = self._sft_context._prepare_input_dict(batch)
+        pred = WanTransformer3DModel.forward(self, input_dict, train_mode=True)
+        latent_loss, action_loss = self._sft_context.compute_loss(input_dict, pred)
+        total_loss = latent_loss + action_loss
+        return {
+            "loss": total_loss,
+            "latent_loss": latent_loss,
+            "action_loss": action_loss,
+        }
+
+    def post_sft_checkpoint_save(self, *, save_path: str, rank: int = 0) -> None:
+        if rank != 0:
+            return
+
+        state_dict_path = os.path.join(save_path, "model_state_dict", "full_weights.pt")
+        export_official_transformer_checkpoint(
+            model_path=self.model_path,
+            state_dict_path=state_dict_path,
+            output_dir=os.path.join(save_path, "transformer"),
         )
 
     def default_forward(self, **kwargs):
         del kwargs
         raise NotImplementedError(
-            "LingBot-VA default_forward is not supported in the current evaluation "
-            "integration. Use predict_action_batch for evaluation."
+            "LingBot-VA default_forward is not supported in the current eval/SFT integration. "
+            "Use predict_action_batch for evaluation and sft_forward for supervised fine-tuning."
         )
 
     @staticmethod
@@ -277,6 +401,8 @@ class LingbotVAActionModel(WanTransformer3DModel, BasePolicy):
         self.to(dtype=runtime_dtype, device=runtime_device)
         self.eval()
         self.requires_grad_(False)
+        self._load_eval_transformer_state_dict(self)
+
         self.enable_offload = bool(getattr(self.job_config, "enable_offload", True))
         self.scheduler = FlowMatchScheduler(
             shift=self.job_config.snr_shift,
@@ -328,6 +454,61 @@ class LingbotVAActionModel(WanTransformer3DModel, BasePolicy):
             os.environ.get("LOCAL_ACCELERATOR_RANK"),
         )
         return self
+
+    def _load_eval_transformer_state_dict(self, transformer: torch.nn.Module) -> None:
+        transformer_state_dict_path = getattr(
+            self.rlinf_config.lingbotva, "transformer_state_dict_path", None
+        )
+        if transformer_state_dict_path is None:
+            return
+
+        checkpoint_path = Path(transformer_state_dict_path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                "LingBot-VA transformer state dict path does not exist: "
+                f"{checkpoint_path}"
+            )
+        if checkpoint_path.is_dir():
+            transformer_dir = (
+                checkpoint_path / "transformer"
+                if (checkpoint_path / "transformer" / "config.json").exists()
+                else checkpoint_path
+            )
+            state_path = transformer_dir / "diffusion_pytorch_model.safetensors"
+            if not state_path.exists():
+                raise FileNotFoundError(
+                    "LingBot-VA transformer checkpoint directory must contain "
+                    f"diffusion_pytorch_model.safetensors: {transformer_dir}"
+                )
+            transformer_state = load_file(str(state_path), device="cpu")
+        else:
+            raw_state = torch.load(
+                checkpoint_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            if not isinstance(raw_state, dict):
+                raise TypeError(
+                    "LingBot-VA transformer state dict must deserialize to a dict, got "
+                    f"{type(raw_state)!r}."
+                )
+            transformer_state = _extract_transformer_state_dict(raw_state)
+
+        missing_keys, unexpected_keys = transformer.load_state_dict(
+            transformer_state,
+            strict=False,
+        )
+        if missing_keys or unexpected_keys:
+            raise RuntimeError(
+                "LingBot-VA transformer checkpoint does not match the runtime "
+                f"model (missing={len(missing_keys)}, unexpected={len(unexpected_keys)})."
+            )
+        logger.info(
+            "Loaded LingBot-VA transformer checkpoint from %s (missing=%d, unexpected=%d).",
+            checkpoint_path,
+            len(missing_keys),
+            len(unexpected_keys),
+        )
 
     def _get_t5_prompt_embeds(
         self,
