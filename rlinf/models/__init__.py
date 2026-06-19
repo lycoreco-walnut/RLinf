@@ -96,6 +96,11 @@ def _register_builtin_models():
 
         return get_model(cfg, torch_dtype)
 
+    def _build_lingbotva(cfg: DictConfig, torch_dtype):
+        from rlinf.models.embodiment.lingbotva import get_model
+
+        return get_model(cfg, torch_dtype)
+
     def _build_abot_m0(cfg: DictConfig, torch_dtype):
         from rlinf.models.embodiment.abot_m0 import get_model
 
@@ -188,6 +193,12 @@ def _register_builtin_models():
     register_model(
         SupportedModel.LINGBOTVLA.value,
         _build_lingbotvla,
+        category="embodied",
+        force=True,
+    )
+    register_model(
+        SupportedModel.LINGBOTVA.value,
+        _build_lingbotva,
         category="embodied",
         force=True,
     )

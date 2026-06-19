@@ -92,6 +92,13 @@ class MultiStepRolloutWorker(Worker):
         )
         self.enable_cuda_graph = cfg.rollout.get("enable_cuda_graph", False)
 
+        if SupportedModel(self.model_cfg.model_type) == SupportedModel.LINGBOTVA:
+            if not self.cfg.runner.only_eval:
+                raise ValueError(
+                    "LingBot-VA rollout state is currently supported for evaluation only. "
+                    "Please set runner.only_eval=True."
+                )
+
         self.n_train_chunk_steps = (
             cfg.env.train.max_steps_per_rollout_epoch
             // self.model_cfg.num_action_chunks
@@ -292,6 +299,7 @@ class MultiStepRolloutWorker(Worker):
             SupportedModel.ABOT_M0,
             SupportedModel.DREAMZERO,
             SupportedModel.CNN_POLICY,
+            SupportedModel.LINGBOTVA,
             SupportedModel.CFG_MODEL,
         ]:
             loss_type = self.algorithm_cfg.get("loss_type", "actor")
